@@ -2,6 +2,8 @@
 
 Bistro is a simple recipe search and management application. It allows you to find recipes for cocktails and meals using free online databases, organize your favorite recipes in a personal collection, and manage your shopping list.
 
+Disclaimer - This was built with the help of generative AI
+
 ## Features
 
 - **Recipe Search**: Search for meals from a vast database.
