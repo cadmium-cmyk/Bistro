@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.cadmiumcmyk.Bistro</id>
+  <metadata_license>CC0-1.0</metadata_license> <project_license>MIT</project_license>
+  <name>Bistro</name>
+  <summary>Find drinks and recipes</summary>
+  <description>
+    <p>A simple application to search for cocktail recipes and meal recipes using online APIs.</p>
+  </description>
+  <launchable type="desktop-id">com.github.cadmiumcmyk.Bistro.desktop</launchable>
+  <screenshots>
+    </screenshots>
+  <url type="homepage">https://github.com/cadmiumcmyk/Bistro</url>
+  <developer_name>cadmiumcmyk</developer_name>
+</component>

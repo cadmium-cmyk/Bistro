@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Bistro
+Comment=Find drinks and recipes
+Exec=bistro.sh
+Icon=com.github.cadmiumcmyk.Bistro
+Terminal=false
+Type=Application
+Categories=Utility;GTK;
+StartupNotify=true

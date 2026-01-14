@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/github/cadmiumcmyk/Bistro">
+    <file>style.css</file>
+    <file>cocktail-symbolic.svg</file>
+    <file>drinks-symbolic.svg</file>
+    <file>fast-food-symbolic.svg</file>
+    <file>list-symbolic.svg</file>
+    <file>pub-symbolic.svg</file>
+    <file alias="icons/hicolor/scalable/apps/com.github.cadmiumcmyk.Bistro.svg">com.github.cadmiumcmyk.Bistro.svg</file>
+  </gresource>
+</gresources>

@@ -1,0 +1,51 @@
+{
+  "app-id": "com.github.cadmiumcmyk.Bistro",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "49",
+  "sdk": "org.gnome.Sdk",
+  "command": "bistro.sh",
+  "finish-args": [
+    "--share=network",
+    "--share=ipc",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--device=dri",
+    "--filesystem=xdg-data",
+    "--talk-name=org.freedesktop.Notifications"
+    
+  ],
+  "modules": [
+      "python3-requests.json",
+    {
+      "name": "bistro",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -D -p main.py /app/bin/main.py",
+        "mkdir -p /app/bin/bistro",
+        "install -D -p bistro/app.py /app/bin/bistro/app.py",
+        "install -D -p bistro/window.py /app/bin/bistro/window.py",
+        "mkdir -p /app/bin/bistro/pages",
+        "install -D -p bistro/pages/add_recipe.py /app/bin/bistro/pages/add_recipe.py",
+        "install -D -p bistro/pages/cocktails.py /app/bin/bistro/pages/cocktails.py",
+        "install -D -p bistro/pages/collection.py /app/bin/bistro/pages/collection.py",
+        "install -D -p bistro/pages/recipe_search.py /app/bin/bistro/pages/recipe_search.py",
+        "install -D -p bistro/pages/shopping_list.py /app/bin/bistro/pages/shopping_list.py",
+        
+        "glib-compile-resources --target=bistro.gresource bistro.gresource.xml",
+        "install -D -p bistro.gresource /app/bin/bistro.gresource",
+        "install -D -p bistro.sh /app/bin/bistro.sh",
+        "chmod +x /app/bin/bistro.sh",
+        
+        "install -D -p com.github.cadmiumcmyk.Bistro.desktop /app/share/applications/com.github.cadmiumcmyk.Bistro.desktop",
+        "install -D -p com.github.cadmiumcmyk.Bistro.svg /app/share/icons/hicolor/128x128/apps/com.github.cadmiumcmyk.Bistro.svg",
+        "install -D -p com.github.cadmiumcmyk.Bistro.metainfo.xml /app/share/metainfo/com.github.cadmiumcmyk.Bistro.metainfo.xml"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "."
+        }
+      ]
+    }
+  ]
+}
