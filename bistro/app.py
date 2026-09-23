@@ -81,6 +81,10 @@ class UnifiedApp(Adw.Application):
         about_action = Gio.SimpleAction.new("about", None)
         about_action.connect("activate", self.on_about)
         self.add_action(about_action)
+
+        nc_action = Gio.SimpleAction.new("nextcloud_sync", None)
+        nc_action.connect("activate", self.on_nextcloud_sync)
+        self.add_action(nc_action)
         
         # Theme action
         settings = self.load_settings()
@@ -117,6 +121,11 @@ class UnifiedApp(Adw.Application):
         dialog.set_comments("A simple app to find drinks and recipes.")
         dialog.set_website("https://github.com/cadmium-cmyk/Bistro/")
         dialog.present()
+
+    def on_nextcloud_sync(self, action, param):
+        win = self.get_active_window()
+        if win and hasattr(win, "show_nextcloud_dialog"):
+            win.show_nextcloud_dialog()
 
     def on_theme(self, action, param):
         action.set_state(param)

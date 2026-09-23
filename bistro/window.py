@@ -81,6 +81,7 @@ class UnifiedWindow(Adw.ApplicationWindow):
         theme_section.append("Dark", "app.theme('dark')")
         menu_model.append_section("Theme", theme_section)
 
+        menu_model.append("Nextcloud Sync...", "app.nextcloud_sync")
         menu_model.append("About", "app.about")
         menu_model.append("Quit", "app.quit")
         menu_btn.set_menu_model(menu_model)
@@ -131,6 +132,11 @@ class UnifiedWindow(Adw.ApplicationWindow):
     def on_add_clicked(self, btn):
         page = AddRecipePage(on_save_callback=self.collection_page.refresh_all)
         self.push_page(page)
+
+    def show_nextcloud_dialog(self):
+        from bistro.nextcloud_dialog import NextcloudSyncDialog
+        dialog = NextcloudSyncDialog(self, self.get_application(), on_sync_complete_callback=self.collection_page.refresh_all)
+        dialog.present()
 
     def push_page(self, page):
         self.nav_view.push(page)

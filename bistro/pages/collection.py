@@ -68,6 +68,12 @@ class CollectionPage(Adw.Bin):
         search_entry.connect("search-changed", self.on_filter_changed)
         row_header.append(search_entry)
         
+        # Sync Button
+        sync_btn = Gtk.Button(label="Sync", icon_name="emblem-synchronizing-symbolic")
+        sync_btn.set_tooltip_text("Sync with Nextcloud Cookbook")
+        sync_btn.connect("clicked", self.on_sync_clicked)
+        row_header.append(sync_btn)
+
         # Add Creation Button
         add_btn = Gtk.Button(label="Create New Recipe", icon_name="list-add-symbolic")
         add_btn.connect("clicked", self.on_add_clicked)
@@ -494,3 +500,45 @@ class CollectionPage(Adw.Bin):
             win.push_page(page)
         else:
             print("Root window is not UnifiedWindow or missing push_page")
+
+    def on_sync_clicked(self, btn):
+        win = self.get_root()
+        app = win.get_application() if win and hasattr(win, "get_application") else None
+        settings = app.load_settings() if app else {}
+
+        from bistro.nextcloud_sync import NextcloudSyncService
+        service = NextcloudSyncService(
+            settings.get("nc_url", ""),
+            settings.get("nc_username", ""),
+            settings.get("nc_password", "")
+        )
+
+        if not service.is_configured():
+            if win and hasattr(win, "show_nextcloud_dialog"):
+                win.show_nextcloud_dialog()
+            else:
+                self.toast_overlay.add_toast(Adw.Toast.new("Please configure Nextcloud credentials first."))
+            return
+
+        btn.set_sensitive(False)
+        self.toast_overlay.add_toast(Adw.Toast.new("Syncing with Nextcloud..."))
+
+        def thread_target():
+            try:
+                pushed, pulled, updated = service.sync(self.MY_RECIPES_FILE)
+                msg = f"Sync complete! Pushed {pushed}, pulled {pulled}, updated {updated}."
+                success = True
+            except Exception as e:
+                msg = f"Sync failed: {str(e)}"
+                success = False
+
+            GLib.idle_add(self.on_sync_finish, success, msg, btn)
+
+        threading.Thread(target=thread_target, daemon=True).start()
+
+    def on_sync_finish(self, success, msg, btn):
+        btn.set_sensitive(True)
+        self.toast_overlay.add_toast(Adw.Toast.new(msg))
+        if success:
+            self.refresh_all()
+        return False
