@@ -9,12 +9,15 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, Gio, GLib
 
+from bistro.cookbook import save_recipe_folder
+
 try:
     from recipe_scrapers import scrape_me
 except ImportError:
     scrape_me = None
 
 class AddRecipePage(Adw.NavigationPage):
+    MY_RECIPES_DIR = os.path.join(GLib.get_user_data_dir(), "bistro", "recipes")
     MY_RECIPES_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "my_recipes.json")
 
     def __init__(self, on_save_callback=None):
@@ -264,35 +267,19 @@ class AddRecipePage(Adw.NavigationPage):
         start, end = self.inst_buffer.get_bounds()
         instructions = self.inst_buffer.get_text(start, end, True).strip()
         
-        # Load existing
-        recipes = self.load_json(self.MY_RECIPES_FILE)
-        
-        saved_img_path = None
-        if self.selected_image_path and os.path.exists(self.selected_image_path):
-            # Copy to user_images
-            try:
-                dest_dir = os.path.join(GLib.get_user_data_dir(), "bistro", "user_images")
-                if not os.path.exists(dest_dir):
-                    os.makedirs(dest_dir)
-                ext = os.path.splitext(self.selected_image_path)[1]
-                import shutil
-                import uuid
-                new_filename = f"{uuid.uuid4()}{ext}"
-                dest_path = os.path.join(dest_dir, new_filename)
-                shutil.copy(self.selected_image_path, dest_path)
-                saved_img_path = dest_path
-            except Exception as e:
-                print(f"Failed to copy image: {e}")
-
         new_recipe = {
             "name": name, 
             "category": self.cat_entry.get_text().strip(),
             "ingredients": ings, 
             "instructions": instructions,
-            "image_path": saved_img_path
+            "image_path": self.selected_image_path
         }
-        recipes.append(new_recipe)
-        self.save_json(self.MY_RECIPES_FILE, recipes)
+
+        # Save to Nextcloud Cookbook format directory under ~/.local/share/bistro/recipes/
+        if not os.path.exists(self.MY_RECIPES_DIR):
+            os.makedirs(self.MY_RECIPES_DIR, exist_ok=True)
+
+        save_recipe_folder(new_recipe, self.MY_RECIPES_DIR)
         
         if self.on_save_callback:
             self.on_save_callback()

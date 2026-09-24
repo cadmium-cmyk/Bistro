@@ -9,7 +9,10 @@ gi.require_version('Adw', '1')
 gi.require_version('GdkPixbuf', '2.0')
 from gi.repository import Gtk, Adw, GLib, Gdk, GdkPixbuf
 
+from bistro.cookbook import load_all_recipes_from_dir
+
 class RecipeSearchPage(Adw.Bin):
+    MY_RECIPES_DIR = os.path.join(GLib.get_user_data_dir(), "bistro", "recipes")
     FAV_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "meals.json")
     MY_RECIPES_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "my_recipes.json")
 
@@ -153,13 +156,22 @@ class RecipeSearchPage(Adw.Bin):
         threading.Thread(target=self.do_fetch, args=(url, False, q, favorites_copy), daemon=True).start()
 
     def load_my_recipes(self):
+        recipes = []
+        if os.path.exists(self.MY_RECIPES_DIR):
+            recipes.extend(load_all_recipes_from_dir(self.MY_RECIPES_DIR))
+
         if os.path.exists(self.MY_RECIPES_FILE):
             try:
                 with open(self.MY_RECIPES_FILE, 'r') as f:
-                    return json.load(f)
+                    legacy = json.load(f)
+                    if isinstance(legacy, list):
+                        for r in legacy:
+                            name = r.get('name')
+                            if not any(e.get('name') == name for e in recipes):
+                                recipes.append(r)
             except:
                 pass
-        return []
+        return recipes
 
     def do_fetch(self, url, is_random, query_used, favorites_snapshot=None):
         results = []
