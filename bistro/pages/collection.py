@@ -7,11 +7,14 @@ import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 gi.require_version('GdkPixbuf', '2.0')
+import shutil
 from gi.repository import Gtk, Adw, GdkPixbuf, Gdk, GLib, Gio
 
 from bistro.pages.add_recipe import AddRecipePage
+from bistro.cookbook import load_all_recipes_from_dir, save_recipe_folder, to_nextcloud_format
 
 class CollectionPage(Adw.Bin):
+    MY_RECIPES_DIR = os.path.join(GLib.get_user_data_dir(), "bistro", "recipes")
     MY_RECIPES_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "my_recipes.json")
     COCKTAILS_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "cocktails.json")
     MEALS_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "meals.json")
@@ -139,8 +142,24 @@ class CollectionPage(Adw.Bin):
              msg = "No items found." if self.filter_text else "Collection is empty."
              self.scroll_content.append(Gtk.Label(label=msg, css_classes=["dim-label"]))
 
+    def load_my_recipes(self):
+        recipes = []
+        # 1. Load Nextcloud Cookbook format recipes from MY_RECIPES_DIR
+        if os.path.exists(self.MY_RECIPES_DIR):
+            recipes.extend(load_all_recipes_from_dir(self.MY_RECIPES_DIR))
+
+        # 2. Load legacy my_recipes.json for backward compatibility
+        legacy_recipes = self.load_json(self.MY_RECIPES_FILE)
+        if isinstance(legacy_recipes, list):
+            for r in legacy_recipes:
+                # Avoid duplicates if name matches
+                name = r.get('name')
+                if not any(existing.get('name') == name for existing in recipes):
+                    recipes.append(r)
+        return recipes
+
     def build_my_creations(self, filter_text=""):
-        recipes = self.load_json(self.MY_RECIPES_FILE)
+        recipes = self.load_my_recipes()
         if not recipes:
             return
 
@@ -150,7 +169,7 @@ class CollectionPage(Adw.Bin):
         for i, r in enumerate(recipes):
             if filter_text:
                 name = r.get('name', '').lower()
-                cat = r.get('category', '').lower()
+                cat = (r.get('category') or r.get('recipeCategory') or '').lower()
                 if filter_text not in name and filter_text not in cat:
                     continue
             group.add(self.create_custom_row(i, r))
@@ -163,11 +182,14 @@ class CollectionPage(Adw.Bin):
         d = os.path.dirname(self.MY_RECIPES_FILE)
         if not os.path.exists(d):
             os.makedirs(d)
+        if not os.path.exists(self.MY_RECIPES_DIR):
+            os.makedirs(self.MY_RECIPES_DIR, exist_ok=True)
 
     def create_custom_row(self, index, data):
         row = Adw.ExpanderRow(title=data['name'])
         row.set_use_markup(False)
-        row.set_subtitle(data.get('category', 'Custom'))
+        category = data.get('category') or data.get('recipeCategory') or 'Custom'
+        row.set_subtitle(category)
         row.add_prefix(Gtk.Image.new_from_icon_name("document-edit-symbolic"))
         
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -226,10 +248,22 @@ class CollectionPage(Adw.Bin):
         return row
 
     def on_delete_custom(self, btn, index):
-        recipes = self.load_json(self.MY_RECIPES_FILE)
+        recipes = self.load_my_recipes()
         if 0 <= index < len(recipes):
-            del recipes[index]
-            self.save_json(self.MY_RECIPES_FILE, recipes)
+            recipe = recipes[index]
+            # Check if it has a folder_path (Nextcloud format)
+            folder_path = recipe.get('folder_path')
+            if folder_path and os.path.exists(folder_path):
+                try:
+                    shutil.rmtree(folder_path)
+                except Exception as e:
+                    print(f"Failed to delete recipe directory {folder_path}: {e}")
+            else:
+                # Legacy json removal
+                legacy_recipes = self.load_json(self.MY_RECIPES_FILE)
+                new_legacy = [r for r in legacy_recipes if r.get('name') != recipe.get('name')]
+                self.save_json(self.MY_RECIPES_FILE, new_legacy)
+
             self.refresh_all()
             self.toast_overlay.add_toast(Adw.Toast.new("Recipe deleted"))
 
@@ -449,28 +483,12 @@ class CollectionPage(Adw.Bin):
                 file = dialog.save_finish(result)
                 stream = file.replace(None, False, Gio.FileCreateFlags.NONE, None)
                 
-                # Construct text
-                name = data.get('name') or data.get('strDrink') or data.get('strMeal') or "Recipe"
-                category = data.get('category') or data.get('strCategory') or "Unknown"
-                
-                text = f"Title: {name}\nCategory: {category}\n\nIngredients:\n"
-                
-                # Ingredients
-                if 'ingredients' in data: # Custom
-                    for ing in data['ingredients']:
-                         text += f"- {ing}\n"
-                else: # API
-                     for i in range(1, 21):
-                        ing = data.get(f"strIngredient{i}")
-                        if ing:
-                            meas = (data.get(f"strMeasure{i}") or "").strip()
-                            text += f"- {meas} {ing.strip()}\n"
-                            
-                text += f"\nInstructions:\n{data.get('instructions') or data.get('strInstructions') or ''}\n"
+                nc_json = to_nextcloud_format(data)
+                text = json.dumps(nc_json, indent=4)
                 
                 stream.write_all(text.encode('utf-8'), None)
                 stream.close(None)
-                self.toast_overlay.add_toast(Adw.Toast.new("Exported"))
+                self.toast_overlay.add_toast(Adw.Toast.new("Exported Nextcloud Cookbook JSON"))
             except Exception as e:
                 print(f"Export failed: {e}")
                 self.toast_overlay.add_toast(Adw.Toast.new("Export failed"))
