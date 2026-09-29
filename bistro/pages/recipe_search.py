@@ -14,6 +14,7 @@ from bistro.cookbook import (
     save_recipe_folder,
     delete_recipe_folder
 )
+from bistro.pages.add_recipe import trigger_auto_sync
 
 class RecipeSearchPage(Adw.Bin):
     MY_RECIPES_DIR = os.path.join(GLib.get_user_data_dir(), "bistro", "recipes")
@@ -321,8 +322,9 @@ class RecipeSearchPage(Adw.Bin):
                 data['category'] = "Meals"
 
             save_recipe_folder(data, self.MY_RECIPES_DIR)
+            trigger_auto_sync()
             btn.set_icon_name("starred-symbolic")
-            self.toast_overlay.add_toast(Adw.Toast.new("Saved to Collection (Nextcloud format)"))
+            self.toast_overlay.add_toast(Adw.Toast.new("Saved to Collection"))
 
     def load_image(self, url, widget):
         try:

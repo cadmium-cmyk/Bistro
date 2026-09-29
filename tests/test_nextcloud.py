@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 import shutil
+import urllib.parse
 from unittest.mock import patch, MagicMock
 from bistro.nextcloud import NextcloudSync
 from bistro.cookbook import save_recipe_folder, load_all_recipes_from_dir
@@ -27,12 +28,10 @@ class TestNextcloudSync(unittest.TestCase):
     @patch("requests.request")
     @patch("requests.get")
     def test_test_connection_webdav_success(self, mock_get, mock_req):
-        # REST API fails
         mock_get_resp = MagicMock()
         mock_get_resp.status_code = 404
         mock_get.return_value = mock_get_resp
 
-        # WebDAV PROPFIND succeeds
         mock_req_resp = MagicMock()
         mock_req_resp.status_code = 207
         mock_req.return_value = mock_req_resp
@@ -59,17 +58,14 @@ class TestNextcloudSync(unittest.TestCase):
     @patch("requests.post")
     @patch("requests.get")
     def test_sync_rest_api(self, mock_get, mock_post):
-        # Local recipe setup
         save_recipe_folder({"name": "Local Recipe", "category": "Test"}, self.temp_dir)
 
-        # Mock GET list of recipes on server
         mock_list_resp = MagicMock()
         mock_list_resp.status_code = 200
         mock_list_resp.json.return_value = [
             {"id": "101", "name": "Remote Recipe"}
         ]
 
-        # Mock GET detail of remote recipe
         mock_detail_resp = MagicMock()
         mock_detail_resp.status_code = 200
         mock_detail_resp.json.return_value = {
@@ -79,7 +75,6 @@ class TestNextcloudSync(unittest.TestCase):
             "recipeInstructions": ["Mix"]
         }
 
-        # Mock POST to create local recipe on server
         mock_post_resp = MagicMock()
         mock_post_resp.status_code = 201
         mock_post.return_value = mock_post_resp
@@ -96,7 +91,6 @@ class TestNextcloudSync(unittest.TestCase):
         self.assertEqual(stats["downloaded"], 1)
         self.assertEqual(stats["uploaded"], 1)
 
-        # Check that remote recipe was downloaded locally
         local_recipes = load_all_recipes_from_dir(self.temp_dir)
         names = [r["name"] for r in local_recipes]
         self.assertIn("Remote Recipe", names)
@@ -105,21 +99,19 @@ class TestNextcloudSync(unittest.TestCase):
     @patch("requests.put")
     @patch("requests.get")
     @patch("requests.request")
-    def test_sync_webdav(self, mock_req, mock_get, mock_put):
+    def test_sync_webdav_with_spaces_in_filename(self, mock_req, mock_get, mock_put):
         # REST API fails
         mock_api_resp = MagicMock()
         mock_api_resp.status_code = 404
         mock_get.return_value = mock_api_resp
 
-        # WebDAV PROPFIND returns XML
+        # Create a local recipe with spaces in name
+        save_recipe_folder({"name": "Fig Old Fashioned", "category": "Cocktails"}, self.temp_dir)
+
         xml_content = b"""<?xml version="1.0" encoding="utf-8"?>
         <d:multistatus xmlns:d="DAV:">
             <d:response>
                 <d:href>/remote.php/dav/files/user/Recipes/</d:href>
-                <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat>
-            </d:response>
-            <d:response>
-                <d:href>/remote.php/dav/files/user/Recipes/RemoteSoup/</d:href>
                 <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat>
             </d:response>
         </d:multistatus>"""
@@ -127,33 +119,33 @@ class TestNextcloudSync(unittest.TestCase):
         mock_prop_resp = MagicMock()
         mock_prop_resp.status_code = 207
         mock_prop_resp.content = xml_content
-        mock_req.return_value = mock_prop_resp
 
-        # Mock GET recipe.json from RemoteSoup
-        mock_rj_resp = MagicMock()
-        mock_rj_resp.status_code = 200
-        mock_rj_resp.json.return_value = {
-            "name": "RemoteSoup",
-            "recipeCategory": "Soup"
-        }
+        mock_mkcol_resp = MagicMock()
+        mock_mkcol_resp.status_code = 201
 
-        def get_side_effect(url, **kwargs):
-            if "recipe.json" in url:
-                return mock_rj_resp
-            resp = MagicMock()
-            resp.status_code = 404
-            return resp
+        def req_side_effect(method, url, **kwargs):
+            if method == "PROPFIND":
+                return mock_prop_resp
+            elif method == "MKCOL":
+                return mock_mkcol_resp
+            return mock_prop_resp
 
-        mock_get.side_effect = get_side_effect
+        mock_req.side_effect = req_side_effect
+
+        mock_put_resp = MagicMock()
+        mock_put_resp.status_code = 201
+        mock_put.return_value = mock_put_resp
 
         ok, stats, msg = self.client.sync(local_recipes_dir=self.temp_dir)
         self.assertTrue(ok)
-        self.assertEqual(stats["downloaded"], 1)
+        self.assertEqual(stats["uploaded"], 1)
 
-        # Verify RemoteSoup saved
-        local_recipes = load_all_recipes_from_dir(self.temp_dir)
-        names = [r["name"] for r in local_recipes]
-        self.assertIn("RemoteSoup", names)
+        # Verify MKCOL and PUT calls included URL-encoded folder name
+        mkcol_urls = [call.args[1] for call in mock_req.call_args_list if call.args[0] == "MKCOL"]
+        put_urls = [call.args[0] for call in mock_put.call_args_list]
+
+        self.assertTrue(any("Fig%20Old%20Fashioned" in url for url in mkcol_urls))
+        self.assertTrue(any("Fig%20Old%20Fashioned/recipe.json" in url for url in put_urls))
 
 if __name__ == "__main__":
     unittest.main()

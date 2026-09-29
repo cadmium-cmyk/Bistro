@@ -12,9 +12,9 @@ from gi.repository import Gtk, Adw, GLib, Gdk, GdkPixbuf
 from bistro.cookbook import (
     load_all_recipes_from_dir,
     save_recipe_folder,
-    delete_recipe_folder,
-    sanitize_filename
+    delete_recipe_folder
 )
+from bistro.pages.add_recipe import trigger_auto_sync
 
 class CocktailPage(Adw.Bin):
     MY_RECIPES_DIR = os.path.join(GLib.get_user_data_dir(), "bistro", "recipes")
@@ -139,7 +139,6 @@ class CocktailPage(Adw.Bin):
         results = []
         seen_ids = set()
 
-        # Local Search (only if not random)
         if not is_random and query_used:
             q_lower = query_used.lower()
             saved_recipes = self.load_saved_recipes()
@@ -152,7 +151,6 @@ class CocktailPage(Adw.Bin):
                         if r.get('id'):
                             seen_ids.add(str(r.get('id')))
 
-        # API Fetch
         try:
             r = requests.get(url, timeout=10)
             api_data = r.json().get('drinks')
@@ -313,16 +311,15 @@ class CocktailPage(Adw.Bin):
             else:
                 self.toast_overlay.add_toast(Adw.Toast.new("Failed to remove"))
         else:
-            # Save to Nextcloud Cookbook format
-            # Ensure category is set
             if 'category' not in data and 'strCategory' in data:
                 data['category'] = data['strCategory']
             if not data.get('category'):
                 data['category'] = "Cocktails"
 
             save_recipe_folder(data, self.MY_RECIPES_DIR)
+            trigger_auto_sync()
             btn.set_icon_name("starred-symbolic")
-            self.toast_overlay.add_toast(Adw.Toast.new("Saved to Collection (Nextcloud format)"))
+            self.toast_overlay.add_toast(Adw.Toast.new("Saved to Collection"))
 
     def load_image(self, url, widget):
         try:

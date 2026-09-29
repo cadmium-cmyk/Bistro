@@ -10,15 +10,33 @@ gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, Gio, GLib
 
 from bistro.cookbook import save_recipe_folder
+from bistro.nextcloud import NextcloudSync
 
 try:
     from recipe_scrapers import scrape_me
 except ImportError:
     scrape_me = None
 
+def trigger_auto_sync():
+    settings_file = os.path.join(GLib.get_user_data_dir(), "bistro", "settings.json")
+    if os.path.exists(settings_file):
+        try:
+            with open(settings_file, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+            if settings.get("nc_sync_enabled"):
+                local_dir = os.path.join(GLib.get_user_data_dir(), "bistro", "recipes")
+                client = NextcloudSync(
+                    server_url=settings.get("nc_url", ""),
+                    username=settings.get("nc_username", ""),
+                    password=settings.get("nc_password", ""),
+                    remote_folder=settings.get("nc_folder", "Recipes")
+                )
+                threading.Thread(target=client.sync, kwargs={"local_recipes_dir": local_dir}, daemon=True).start()
+        except Exception as e:
+            print(f"Auto-sync error: {e}")
+
 class AddRecipePage(Adw.NavigationPage):
     MY_RECIPES_DIR = os.path.join(GLib.get_user_data_dir(), "bistro", "recipes")
-    MY_RECIPES_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "my_recipes.json")
 
     def __init__(self, on_save_callback=None):
         super().__init__(title="New Recipe", tag="add_recipe")
@@ -107,21 +125,13 @@ class AddRecipePage(Adw.NavigationPage):
         
         self.inst_buffer = Gtk.TextBuffer()
         inst_view = Gtk.TextView(buffer=self.inst_buffer)
-        inst_view.set_size_request(-1, 200) # Taller for long recipes
+        inst_view.set_size_request(-1, 200)
         inst_view.set_wrap_mode(Gtk.WrapMode.WORD)
         
         frame = Gtk.Frame()
         frame.set_child(inst_view)
         box.append(frame)
         
-        # Toast overlay for this page? 
-        # Actually UnifiedWindow doesn't have a global toast overlay easily accessible unless we pass it.
-        # But we are leaving the page on save, so toasts might be lost if we don't show them on the parent.
-        # For errors, we might want a local toast overlay.
-        # Let's wrap the ToolbarView in a ToastOverlay?
-        # Adw.NavigationPage -> Adw.ToastOverlay -> Adw.ToolbarView
-        
-        # Re-parent
         self.set_child(None)
         self.toast_overlay = Adw.ToastOverlay()
         self.set_child(self.toast_overlay)
@@ -160,17 +170,15 @@ class AddRecipePage(Adw.NavigationPage):
             instructions = scraper.instructions()
             image_url = scraper.image()
             
-            # Download image if available
             img_path = None
             if image_url:
                 try:
-                    r = requests.get(image_url, stream=True)
+                    r = requests.get(image_url, stream=True, timeout=10)
                     if r.status_code == 200:
                         dest_dir = os.path.join(GLib.get_user_data_dir(), "bistro", "user_images")
                         if not os.path.exists(dest_dir):
                             os.makedirs(dest_dir)
                         ext = os.path.splitext(image_url)[1] or ".jpg"
-                        # Clean extension
                         if '?' in ext: ext = ext.split('?')[0]
                         if not ext: ext = ".jpg"
                         
@@ -193,7 +201,6 @@ class AddRecipePage(Adw.NavigationPage):
         if title:
             self.name_entry.set_text(title)
         
-        # Clear ingredients
         for row in list(self.ingredient_rows):
             self.remove_ing(row)
             
@@ -201,7 +208,7 @@ class AddRecipePage(Adw.NavigationPage):
             for ing in ingredients:
                 self.add_ingredient_row(ing)
         else:
-            self.add_ingredient_row() # Ensure at least one
+            self.add_ingredient_row()
             
         if instructions:
             self.inst_buffer.set_text(instructions)
@@ -237,25 +244,7 @@ class AddRecipePage(Adw.NavigationPage):
         filters.append(filter_img)
         dialog.set_filters(filters)
         
-        # We need a parent window for the dialog. 
-        # self.get_root() works if the page is attached.
         dialog.open(self.get_root(), None, open_callback)
-
-    def load_json(self, filename):
-        if os.path.exists(filename):
-            try:
-                with open(filename, 'r') as f:
-                    return json.load(f)
-            except:
-                pass
-        return []
-
-    def save_json(self, filename, data):
-        try:
-            with open(filename, 'w') as f:
-                json.dump(data, f, indent=4)
-        except:
-            pass
 
     def on_save(self, btn):
         name = self.name_entry.get_text().strip()
@@ -275,31 +264,15 @@ class AddRecipePage(Adw.NavigationPage):
             "image_path": self.selected_image_path
         }
 
-        # Save to Nextcloud Cookbook format directory under ~/.local/share/bistro/recipes/
         if not os.path.exists(self.MY_RECIPES_DIR):
             os.makedirs(self.MY_RECIPES_DIR, exist_ok=True)
 
         save_recipe_folder(new_recipe, self.MY_RECIPES_DIR)
+        trigger_auto_sync()
         
         if self.on_save_callback:
             self.on_save_callback()
             
-        # Pop self
-        # We need to find the navigation view. 
-        # Adw.NavigationPage does not have a 'pop' method directly, 
-        # but the parent (NavigationView) does.
-        # But we can assume we are in a navigation view?
-        # Or simpler:
-        # self.get_parent() is likely the NavigationView (or an intermediate widget?).
-        # Actually we can't reliably traverse up to find NavigationView easily in python safely without checking types.
-        # But wait, Adw.NavigationView has `pop()`.
-        # Usually we pass the controller or find it.
-        # Since I am writing the window code, I can pass the navigation view to the constructor?
-        # OR: I can use `Adw.NavigationView.find_and_pop(self)`? No such method.
-        # `Adw.NavigationView.pop()` pops the top. Since we are the top, it works.
-        # How to get the NavigationView?
-        # `widget.get_ancestor(Adw.NavigationView)`
-        
         nav = self.get_ancestor(Adw.NavigationView)
         if nav:
             nav.pop()
