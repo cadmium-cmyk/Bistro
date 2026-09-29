@@ -21,8 +21,6 @@ class UnifiedWindow(Adw.ApplicationWindow):
         if os.path.exists(resource_path):
             try:
                 resource = Gio.Resource.load(resource_path)
-                # Registering multiple times is safe (handled by GLib) or might throw if already registered
-                # We catch exception just in case
                 try:
                     resource._register()
                 except:
@@ -73,6 +71,7 @@ class UnifiedWindow(Adw.ApplicationWindow):
         
         # Create Menu Model
         menu_model = Gio.Menu()
+        menu_model.append("Preferences", "app.preferences")
         
         # Theme Section
         theme_section = Gio.Menu()
@@ -95,11 +94,11 @@ class UnifiedWindow(Adw.ApplicationWindow):
         page1 = self.stack.add_titled(CocktailPage(self.shopping_list_page), "cocktails", "Cocktails")
         page1.set_icon_name("drinks-symbolic")
         
-        # Recipes (replacing Breweries)
+        # Recipes
         page2 = self.stack.add_titled(RecipeSearchPage(self.shopping_list_page), "recipes", "Recipes")
         page2.set_icon_name("fast-food-symbolic")
         
-        # Collection (replacing My Recipes)
+        # Collection
         self.collection_page = CollectionPage(self.shopping_list_page)
         page3 = self.stack.add_titled(self.collection_page, "collection", "Collection")
         page3.set_icon_name("starred-symbolic")

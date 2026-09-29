@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import threading
 import requests
 import gi
@@ -7,25 +8,30 @@ import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 gi.require_version('GdkPixbuf', '2.0')
-import shutil
 from gi.repository import Gtk, Adw, GdkPixbuf, Gdk, GLib, Gio
 
 from bistro.pages.add_recipe import AddRecipePage
-from bistro.cookbook import load_all_recipes_from_dir, save_recipe_folder, to_nextcloud_format
+from bistro.cookbook import (
+    load_all_recipes_from_dir,
+    save_recipe_folder,
+    delete_recipe_folder,
+    to_nextcloud_format,
+    migrate_legacy_storage
+)
+from bistro.nextcloud import NextcloudSync
 
 class CollectionPage(Adw.Bin):
+    BISTRO_DIR = os.path.join(GLib.get_user_data_dir(), "bistro")
     MY_RECIPES_DIR = os.path.join(GLib.get_user_data_dir(), "bistro", "recipes")
-    MY_RECIPES_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "my_recipes.json")
-    COCKTAILS_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "cocktails.json")
-    MEALS_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "meals.json")
+    SETTINGS_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "settings.json")
 
     def __init__(self, shopping_list_page=None):
         super().__init__()
-        
+
         # Load resources locally to ensure icons are available
         base_path = os.path.dirname(os.path.abspath(__file__))
         resource_path = os.path.join(base_path, "..", "..", "bistro.gresource")
-        
+
         if os.path.exists(resource_path):
             try:
                 resource = Gio.Resource.load(resource_path)
@@ -44,10 +50,10 @@ class CollectionPage(Adw.Bin):
         self.shopping_list_page = shopping_list_page
         self.filter_text = ""
         self.ensure_data_dir()
-        
+
         self.toast_overlay = Adw.ToastOverlay()
         self.set_child(self.toast_overlay)
-        
+
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.toast_overlay.set_child(main_box)
 
@@ -58,7 +64,7 @@ class CollectionPage(Adw.Bin):
         controls.set_margin_start(24)
         controls.set_margin_end(24)
         main_box.append(controls)
-        
+
         row_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         controls.append(row_header)
 
@@ -70,7 +76,13 @@ class CollectionPage(Adw.Bin):
         search_entry.set_hexpand(True)
         search_entry.connect("search-changed", self.on_filter_changed)
         row_header.append(search_entry)
-        
+
+        # Sync Button
+        self.sync_btn = Gtk.Button(label="Sync", icon_name="emblem-synchronizing-symbolic")
+        self.sync_btn.set_tooltip_text("Sync with Nextcloud Server")
+        self.sync_btn.connect("clicked", self.on_sync_clicked)
+        row_header.append(self.sync_btn)
+
         # Add Creation Button
         add_btn = Gtk.Button(label="Create New Recipe", icon_name="list-add-symbolic")
         add_btn.connect("clicked", self.on_add_clicked)
@@ -80,124 +92,110 @@ class CollectionPage(Adw.Bin):
         scroll = Gtk.ScrolledWindow()
         scroll.set_vexpand(True)
         main_box.append(scroll)
-        
+
         self.scroll_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.scroll_content.set_margin_top(12)
         self.scroll_content.set_margin_bottom(24)
         self.scroll_content.set_margin_start(24)
         self.scroll_content.set_margin_end(24)
-        
+
         clamp = Adw.Clamp()
         clamp.set_child(self.scroll_content)
         scroll.set_child(clamp)
 
         self.refresh_all()
 
-    def load_json(self, filename):
-        if os.path.exists(filename):
-            try:
-                with open(filename, 'r') as f:
-                    return json.load(f)
-            except:
-                pass
-        
-        # Try default file
-        basename = os.path.basename(filename)
-        # my_recipes.json doesn't have a default
-        if basename == "my_recipes.json":
-            return []
-            
-        try:
-            base = os.path.dirname(os.path.abspath(__file__))
-            default_file = os.path.join(base, "..", "..", basename)
-            if os.path.exists(default_file):
-                with open(default_file, 'r') as f:
-                    return json.load(f)
-        except:
-            pass
-            
-        return {}
+    def ensure_data_dir(self):
+        if not os.path.exists(self.BISTRO_DIR):
+            os.makedirs(self.BISTRO_DIR, exist_ok=True)
+        if not os.path.exists(self.MY_RECIPES_DIR):
+            os.makedirs(self.MY_RECIPES_DIR, exist_ok=True)
+        migrate_legacy_storage(self.BISTRO_DIR)
 
-    def save_json(self, filename, data):
-        try:
-            with open(filename, 'w') as f:
-                json.dump(data, f, indent=4)
-        except:
-            pass
+    def load_settings(self):
+        if os.path.exists(self.SETTINGS_FILE):
+            try:
+                with open(self.SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
 
     def on_filter_changed(self, entry):
         self.filter_text = entry.get_text().strip().lower()
         self.refresh_all()
 
     def refresh_all(self):
+        self.ensure_data_dir()
         # Clear content
         while c := self.scroll_content.get_first_child():
             self.scroll_content.remove(c)
-        
-        self.build_my_creations(self.filter_text)
-        self.build_cocktails(self.filter_text)
-        self.build_meals(self.filter_text)
-        
-        if not self.scroll_content.get_first_child():
-             msg = "No items found." if self.filter_text else "Collection is empty."
-             self.scroll_content.append(Gtk.Label(label=msg, css_classes=["dim-label"]))
 
-    def load_my_recipes(self):
-        recipes = []
-        # 1. Load Nextcloud Cookbook format recipes from MY_RECIPES_DIR
-        if os.path.exists(self.MY_RECIPES_DIR):
-            recipes.extend(load_all_recipes_from_dir(self.MY_RECIPES_DIR))
+        recipes = load_all_recipes_from_dir(self.MY_RECIPES_DIR)
 
-        # 2. Load legacy my_recipes.json for backward compatibility
-        legacy_recipes = self.load_json(self.MY_RECIPES_FILE)
-        if isinstance(legacy_recipes, list):
-            for r in legacy_recipes:
-                # Avoid duplicates if name matches
-                name = r.get('name')
-                if not any(existing.get('name') == name for existing in recipes):
-                    recipes.append(r)
-        return recipes
-
-    def build_my_creations(self, filter_text=""):
-        recipes = self.load_my_recipes()
         if not recipes:
+            msg = "No items found." if self.filter_text else "Collection is empty."
+            self.scroll_content.append(Gtk.Label(label=msg, css_classes=["dim-label"]))
             return
 
-        visible_count = 0
-        group = Adw.PreferencesGroup(title="My Creations")
-        
-        for i, r in enumerate(recipes):
-            if filter_text:
-                name = r.get('name', '').lower()
-                cat = (r.get('category') or r.get('recipeCategory') or '').lower()
-                if filter_text not in name and filter_text not in cat:
-                    continue
-            group.add(self.create_custom_row(i, r))
-            visible_count += 1
-            
-        if visible_count > 0:
-            self.scroll_content.append(group)
+        # Group recipes by category
+        categories = {}
+        for r in recipes:
+            cat = r.get('category') or r.get('recipeCategory') or "General"
+            if not cat.strip():
+                cat = "General"
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(r)
 
-    def ensure_data_dir(self):
-        d = os.path.dirname(self.MY_RECIPES_FILE)
-        if not os.path.exists(d):
-            os.makedirs(d)
-        if not os.path.exists(self.MY_RECIPES_DIR):
-            os.makedirs(self.MY_RECIPES_DIR, exist_ok=True)
+        total_visible = 0
+        for cat_name in sorted(categories.keys()):
+            group_recipes = categories[cat_name]
+            group = Adw.PreferencesGroup(title=cat_name)
+            cat_visible = 0
 
-    def create_custom_row(self, index, data):
-        row = Adw.ExpanderRow(title=data['name'])
+            for recipe in group_recipes:
+                if self.filter_text:
+                    name = recipe.get('name', '').lower()
+                    cat = (recipe.get('category') or recipe.get('recipeCategory') or '').lower()
+                    desc = recipe.get('description', '').lower()
+                    if self.filter_text not in name and self.filter_text not in cat and self.filter_text not in desc:
+                        continue
+
+                group.add(self.create_recipe_row(recipe))
+                cat_visible += 1
+                total_visible += 1
+
+            if cat_visible > 0:
+                self.scroll_content.append(group)
+
+        if total_visible == 0:
+            msg = "No items found." if self.filter_text else "Collection is empty."
+            self.scroll_content.append(Gtk.Label(label=msg, css_classes=["dim-label"]))
+
+    def create_recipe_row(self, data):
+        title = data.get('name', 'Untitled Recipe')
+        row = Adw.ExpanderRow(title=title)
         row.set_use_markup(False)
-        category = data.get('category') or data.get('recipeCategory') or 'Custom'
+        category = data.get('category') or data.get('recipeCategory') or 'General'
         row.set_subtitle(category)
-        row.add_prefix(Gtk.Image.new_from_icon_name("document-edit-symbolic"))
-        
+
+        # Icon based on category or default
+        cat_lower = category.lower()
+        icon_name = "document-edit-symbolic"
+        if "drink" in cat_lower or "cocktail" in cat_lower:
+            icon_name = "drinks-symbolic"
+        elif "meal" in cat_lower or "food" in cat_lower or "main" in cat_lower:
+            icon_name = "fast-food-symbolic"
+
+        row.add_prefix(Gtk.Image.new_from_icon_name(icon_name))
+
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_margin_top(12)
         box.set_margin_bottom(12)
         box.set_margin_start(12)
         box.set_margin_end(12)
-        
+
         # Image
         if img_path := data.get('image_path'):
             if os.path.exists(img_path):
@@ -208,14 +206,18 @@ class CollectionPage(Adw.Bin):
                 img.set_valign(Gtk.Align.CENTER)
                 img.add_css_class("rounded-image")
                 box.append(img)
-        
-        box.append(Gtk.Label(label=data.get('instructions', ''), wrap=True, xalign=0))
-        
+
+        # Instructions / Description
+        instr = data.get('instructions') or data.get('description') or ''
+        if instr:
+            box.append(Gtk.Label(label=instr, wrap=True, xalign=0))
+
+        # Ingredients
         ingredients = data.get('ingredients', [])
         if ingredients:
             ing_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
             box.append(ing_box)
-            
+
             for ing in ingredients:
                 row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
                 lbl = Gtk.Label(label=f"• {ing}", xalign=0, hexpand=True, css_classes=["dim-label"])
@@ -229,7 +231,7 @@ class CollectionPage(Adw.Bin):
                 row_box.append(lbl)
                 row_box.append(btn)
                 ing_box.append(row_box)
-        
+
         actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         box.append(actions_box)
 
@@ -241,251 +243,29 @@ class CollectionPage(Adw.Bin):
         del_btn.add_css_class("destructive-action")
         del_btn.set_hexpand(True)
         del_btn.set_halign(Gtk.Align.END)
-        del_btn.connect("clicked", self.on_delete_custom, index)
+        del_btn.connect("clicked", self.on_delete_recipe, data)
         actions_box.append(del_btn)
-        
+
         row.add_row(box)
         return row
 
-    def on_delete_custom(self, btn, index):
-        recipes = self.load_my_recipes()
-        if 0 <= index < len(recipes):
-            recipe = recipes[index]
-            # Check if it has a folder_path (Nextcloud format)
-            folder_path = recipe.get('folder_path')
-            if folder_path and os.path.exists(folder_path):
-                try:
-                    shutil.rmtree(folder_path)
-                except Exception as e:
-                    print(f"Failed to delete recipe directory {folder_path}: {e}")
-            else:
-                # Legacy json removal
-                legacy_recipes = self.load_json(self.MY_RECIPES_FILE)
-                new_legacy = [r for r in legacy_recipes if r.get('name') != recipe.get('name')]
-                self.save_json(self.MY_RECIPES_FILE, new_legacy)
-
+    def on_delete_recipe(self, btn, recipe_data):
+        folder_path = recipe_data.get('folder_path')
+        if folder_path and delete_recipe_folder(folder_path):
             self.refresh_all()
             self.toast_overlay.add_toast(Adw.Toast.new("Recipe deleted"))
-
-    def build_cocktails(self, filter_text=""):
-        favs = self.load_json(self.COCKTAILS_FILE)
-        if not favs:
-            return
-            
-        group = Adw.PreferencesGroup(title="Saved Cocktails")
-        visible_count = 0
-        
-        for d_id, data in favs.items():
-            if filter_text:
-                name = data.get('strDrink', '').lower()
-                cat = data.get('strCategory', '').lower()
-                if filter_text not in name and filter_text not in cat:
-                    continue
-            group.add(self.create_cocktail_row(d_id, data))
-            visible_count += 1
-            
-        if visible_count > 0:
-            self.scroll_content.append(group)
-
-    def create_cocktail_row(self, d_id, data):
-        row = Adw.ExpanderRow(title=data['strDrink'])
-        row.set_use_markup(False)
-        row.set_subtitle(data.get('strCategory', 'Unknown'))
-        row.add_prefix(Gtk.Image.new_from_icon_name("drinks-symbolic"))
-        
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
-
-        # Image
-        img = Gtk.Picture()
-        img.set_size_request(150, 150)
-        img.set_content_fit(Gtk.ContentFit.COVER)
-        img.set_halign(Gtk.Align.CENTER)
-        img.set_valign(Gtk.Align.CENTER)
-        img.add_css_class("rounded-image")
-        box.append(img)
-        
-        if thumb := data.get('strDrinkThumb'):
-            threading.Thread(target=self.load_image, args=(f"{thumb}/preview", img), daemon=True).start()
-        
-        box.append(Gtk.Label(label=data.get('strInstructions',''), wrap=True, xalign=0))
-        
-        # Simplified display for collection
-        ings = []
-        for i in range(1, 16):
-            if ing := data.get(f"strIngredient{i}"):
-                meas = (data.get(f"strMeasure{i}") or "").strip()
-                ings.append(f"• {meas} {ing.strip()}")
-        
-        if ings:
-            ing_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-            box.append(ing_box)
-            for ing_str in ings:
-                text = ing_str.lstrip("• ").strip()
-                row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-                lbl = Gtk.Label(label=f"• {text}", xalign=0, hexpand=True, css_classes=["dim-label"])
-                btn = Gtk.Button(icon_name="list-add-symbolic")
-                btn.add_css_class("flat")
-                btn.set_tooltip_text("Add to Shopping List")
-                if self.shopping_list_page:
-                    btn.connect("clicked", self.on_add_to_list, text)
-                else:
-                    btn.set_sensitive(False)
-                row_box.append(lbl)
-                row_box.append(btn)
-                ing_box.append(row_box)
-
-        actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        box.append(actions_box)
-
-        export_btn = Gtk.Button(label="Export", icon_name="document-save-symbolic")
-        export_btn.connect("clicked", self.on_export, data)
-        actions_box.append(export_btn)
-            
-        del_btn = Gtk.Button(label="Unsave", icon_name="user-trash-symbolic")
-        del_btn.add_css_class("destructive-action")
-        del_btn.set_hexpand(True)
-        del_btn.set_halign(Gtk.Align.END)
-        del_btn.connect("clicked", self.on_delete_cocktail, d_id)
-        actions_box.append(del_btn)
-        
-        row.add_row(box)
-        return row
-
-    def on_delete_cocktail(self, btn, d_id):
-        favs = self.load_json(self.COCKTAILS_FILE)
-        if d_id in favs:
-            del favs[d_id]
-            self.save_json(self.COCKTAILS_FILE, favs)
-            self.refresh_all()
-            self.toast_overlay.add_toast(Adw.Toast.new("Cocktail unsaved"))
-
-    def build_meals(self, filter_text=""):
-        favs = self.load_json(self.MEALS_FILE)
-        if not favs:
-            return
-            
-        group = Adw.PreferencesGroup(title="Saved Recipes")
-        visible_count = 0
-        
-        for m_id, data in favs.items():
-            if filter_text:
-                name = data.get('strMeal', '').lower()
-                cat = data.get('strCategory', '').lower()
-                if filter_text not in name and filter_text not in cat:
-                    continue
-            group.add(self.create_meal_row(m_id, data))
-            visible_count += 1
-            
-        if visible_count > 0:
-            self.scroll_content.append(group)
-
-    def create_meal_row(self, m_id, data):
-        title = data.get('strMeal') or "Unknown"
-        row = Adw.ExpanderRow(title=title)
-        row.set_use_markup(False)
-        row.set_subtitle(data.get('strCategory', 'Unknown'))
-        row.add_prefix(Gtk.Image.new_from_icon_name("fast-food-symbolic")) # Generic icon
-        
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
-        
-        # Image
-        img = Gtk.Picture()
-        img.set_size_request(150, 150)
-        img.set_content_fit(Gtk.ContentFit.COVER)
-        img.set_halign(Gtk.Align.CENTER)
-        img.set_valign(Gtk.Align.CENTER)
-        img.add_css_class("rounded-image")
-        box.append(img)
-        
-        if thumb := data.get('strMealThumb'):
-            threading.Thread(target=self.load_image, args=(f"{thumb}/preview", img), daemon=True).start()
-
-        box.append(Gtk.Label(label=data.get('strInstructions',''), wrap=True, xalign=0))
-        
-        ings = []
-        for i in range(1, 21):
-            if ing := data.get(f"strIngredient{i}"):
-                if not ing.strip(): continue
-                meas = (data.get(f"strMeasure{i}") or "").strip()
-                ings.append(f"• {meas} {ing.strip()}")
-        
-        if ings:
-            ing_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-            box.append(ing_box)
-            for ing_str in ings:
-                text = ing_str.lstrip("• ").strip()
-                row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-                lbl = Gtk.Label(label=f"• {text}", xalign=0, hexpand=True, css_classes=["dim-label"])
-                btn = Gtk.Button(icon_name="list-add-symbolic")
-                btn.add_css_class("flat")
-                btn.set_tooltip_text("Add to Shopping List")
-                if self.shopping_list_page:
-                    btn.connect("clicked", self.on_add_to_list, text)
-                else:
-                    btn.set_sensitive(False)
-                row_box.append(lbl)
-                row_box.append(btn)
-                ing_box.append(row_box)
-
-        actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        box.append(actions_box)
-
-        export_btn = Gtk.Button(label="Export", icon_name="document-save-symbolic")
-        export_btn.connect("clicked", self.on_export, data)
-        actions_box.append(export_btn)
-            
-        del_btn = Gtk.Button(label="Unsave", icon_name="user-trash-symbolic")
-        del_btn.add_css_class("destructive-action")
-        del_btn.set_hexpand(True)
-        del_btn.set_halign(Gtk.Align.END)
-        del_btn.connect("clicked", self.on_delete_meal, m_id)
-        actions_box.append(del_btn)
-        
-        row.add_row(box)
-        return row
-
-    def on_delete_meal(self, btn, m_id):
-        favs = self.load_json(self.MEALS_FILE)
-        if m_id in favs:
-            del favs[m_id]
-            self.save_json(self.MEALS_FILE, favs)
-            self.refresh_all()
-            self.toast_overlay.add_toast(Adw.Toast.new("Meal unsaved"))
-
-    def load_image(self, url, widget):
-        try:
-            r = requests.get(url)
-            GLib.idle_add(self.set_image_texture, widget, r.content)
-        except:
-            pass
-
-    def set_image_texture(self, widget, data):
-        try:
-            loader = GdkPixbuf.PixbufLoader()
-            loader.write(data)
-            loader.close()
-            widget.set_paintable(Gdk.Texture.new_for_pixbuf(loader.get_pixbuf()))
-        except:
-            pass
-        return False
+        else:
+            self.toast_overlay.add_toast(Adw.Toast.new("Failed to delete recipe"))
 
     def on_export(self, btn, data):
         def save_callback(dialog, result):
             try:
                 file = dialog.save_finish(result)
                 stream = file.replace(None, False, Gio.FileCreateFlags.NONE, None)
-                
+
                 nc_json = to_nextcloud_format(data)
                 text = json.dumps(nc_json, indent=4)
-                
+
                 stream.write_all(text.encode('utf-8'), None)
                 stream.close(None)
                 self.toast_overlay.add_toast(Adw.Toast.new("Exported Nextcloud Cookbook JSON"))
@@ -494,13 +274,13 @@ class CollectionPage(Adw.Bin):
                 self.toast_overlay.add_toast(Adw.Toast.new("Export failed"))
 
         dialog = Gtk.FileDialog()
-        name = data.get('name') or data.get('strDrink') or data.get('strMeal') or "recipe"
+        name = data.get('name') or "recipe"
         safe_name = "".join([c for c in name if c.isalnum() or c in (' ', '-', '_')]).strip()
-        dialog.set_initial_name(f"{safe_name}.txt")
+        dialog.set_initial_name(f"{safe_name}.json")
         dialog.save(self.get_root(), None, save_callback)
 
     def on_add_to_list(self, btn, text):
-        if self.shopping_list_page.add_item(text):
+        if self.shopping_list_page and self.shopping_list_page.add_item(text):
             self.toast_overlay.add_toast(Adw.Toast.new(f"Added '{text}' to list"))
         else:
             self.toast_overlay.add_toast(Adw.Toast.new(f"'{text}' is already in list"))
@@ -510,5 +290,31 @@ class CollectionPage(Adw.Bin):
         if hasattr(win, "push_page"):
             page = AddRecipePage(on_save_callback=self.refresh_all)
             win.push_page(page)
-        else:
-            print("Root window is not UnifiedWindow or missing push_page")
+
+    def on_sync_clicked(self, btn):
+        settings = self.load_settings()
+        if not settings.get("nc_sync_enabled"):
+            self.toast_overlay.add_toast(Adw.Toast.new("Nextcloud Sync is disabled in Preferences."))
+            return
+
+        self.sync_btn.set_sensitive(False)
+        self.toast_overlay.add_toast(Adw.Toast.new("Syncing with Nextcloud..."))
+
+        def do_sync():
+            client = NextcloudSync(
+                server_url=settings.get("nc_url", ""),
+                username=settings.get("nc_username", ""),
+                password=settings.get("nc_password", ""),
+                remote_folder=settings.get("nc_folder", "Recipes")
+            )
+            ok, stats, msg = client.sync(local_recipes_dir=self.MY_RECIPES_DIR)
+
+            def finish():
+                self.sync_btn.set_sensitive(True)
+                self.refresh_all()
+                self.toast_overlay.add_toast(Adw.Toast.new(msg))
+                return False
+
+            GLib.idle_add(finish)
+
+        threading.Thread(target=do_sync, daemon=True).start()

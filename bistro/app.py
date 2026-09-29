@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import threading
 import gi
 
 gi.require_version('Gtk', '4.0')
@@ -8,9 +9,12 @@ gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, Gdk, Gio, GLib
 
 from bistro.window import UnifiedWindow
+from bistro.cookbook import migrate_legacy_storage
+from bistro.nextcloud import NextcloudSync
 
 class UnifiedApp(Adw.Application):
     SETTINGS_FILE = os.path.join(GLib.get_user_data_dir(), "bistro", "settings.json")
+    BISTRO_DIR = os.path.join(GLib.get_user_data_dir(), "bistro")
 
     def __init__(self):
         super().__init__(application_id="com.github.cadmiumcmyk.Bistro", flags=0)
@@ -18,11 +22,15 @@ class UnifiedApp(Adw.Application):
     def load_settings(self):
         if os.path.exists(self.SETTINGS_FILE):
             try:
-                with open(self.SETTINGS_FILE, 'r') as f:
+                with open(self.SETTINGS_FILE, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
+            except Exception:
                 pass
         return {}
+
+    def get_setting(self, key, default=None):
+        settings = self.load_settings()
+        return settings.get(key, default)
 
     def save_settings(self, key, value):
         settings = self.load_settings()
@@ -30,23 +38,41 @@ class UnifiedApp(Adw.Application):
         
         d = os.path.dirname(self.SETTINGS_FILE)
         if not os.path.exists(d):
-            os.makedirs(d)
+            os.makedirs(d, exist_ok=True)
             
         try:
-            with open(self.SETTINGS_FILE, 'w') as f:
+            with open(self.SETTINGS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4)
         except Exception as e:
             print(f"Failed to save settings: {e}")
 
+    def save_settings_dict(self, new_settings):
+        settings = self.load_settings()
+        settings.update(new_settings)
+        d = os.path.dirname(self.SETTINGS_FILE)
+        if not os.path.exists(d):
+            os.makedirs(d, exist_ok=True)
+        try:
+            with open(self.SETTINGS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            print(f"Failed to save settings dict: {e}")
+
     def do_startup(self):
         Adw.Application.do_startup(self)
+
+        # Ensure directory and migrate legacy storage if needed
+        os.makedirs(self.BISTRO_DIR, exist_ok=True)
+        try:
+            migrate_legacy_storage(self.BISTRO_DIR)
+        except Exception as e:
+            print(f"Migration error on startup: {e}")
 
         # Load resources
         base_path = os.path.dirname(os.path.abspath(__file__))
         resource_path = os.path.join(base_path, "..", "bistro.gresource")
         
         if not os.path.exists(resource_path):
-             # Try building directory or current dir fallback
              if os.path.exists("bistro.gresource"):
                  resource_path = "bistro.gresource"
 
@@ -81,6 +107,10 @@ class UnifiedApp(Adw.Application):
         about_action = Gio.SimpleAction.new("about", None)
         about_action.connect("activate", self.on_about)
         self.add_action(about_action)
+
+        pref_action = Gio.SimpleAction.new("preferences", None)
+        pref_action.connect("activate", self.on_preferences)
+        self.add_action(pref_action)
         
         # Theme action
         settings = self.load_settings()
@@ -114,7 +144,7 @@ class UnifiedApp(Adw.Application):
         dialog.set_version("1.0")
         dialog.set_developer_name("Developer")
         dialog.set_license_type(Gtk.License.MIT_X11)
-        dialog.set_comments("A simple app to find drinks and recipes.")
+        dialog.set_comments("A simple app to find drinks and recipes with Nextcloud Cookbook sync.")
         dialog.set_website("https://github.com/cadmium-cmyk/Bistro/")
         dialog.present()
 
@@ -130,6 +160,121 @@ class UnifiedApp(Adw.Application):
             manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
         
         self.save_settings("theme", val)
+
+    def on_preferences(self, action, param):
+        win = self.get_active_window()
+        pref_win = Adw.PreferencesWindow(transient_for=win, modal=True, title="Preferences")
+        page = Adw.PreferencesPage(title="Nextcloud Sync", icon_name="emblem-synchronizing-symbolic")
+        pref_win.add(page)
+
+        group = Adw.PreferencesGroup(title="Nextcloud Server Connection")
+        page.add(group)
+
+        settings = self.load_settings()
+
+        enable_switch = Adw.SwitchRow(title="Enable Nextcloud Sync")
+        enable_switch.set_active(settings.get("nc_sync_enabled", False))
+        group.add(enable_switch)
+
+        url_row = Adw.EntryRow(title="Server URL")
+        url_row.set_text(settings.get("nc_url", ""))
+        group.add(url_row)
+
+        user_row = Adw.EntryRow(title="Username")
+        user_row.set_text(settings.get("nc_username", ""))
+        group.add(user_row)
+
+        pass_row = Adw.PasswordEntryRow(title="Password / App Password")
+        pass_row.set_text(settings.get("nc_password", ""))
+        group.add(pass_row)
+
+        folder_row = Adw.EntryRow(title="Remote Folder")
+        folder_row.set_text(settings.get("nc_folder", "Recipes"))
+        group.add(folder_row)
+
+        status_label = Gtk.Label(label="", wrap=True, css_classes=["dim-label"], margin_top=8, margin_bottom=8)
+
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, margin_top=12)
+
+        test_btn = Gtk.Button(label="Test Connection")
+        test_btn.add_css_class("suggested-action")
+
+        sync_btn = Gtk.Button(label="Sync Now")
+
+        btn_box.append(test_btn)
+        btn_box.append(sync_btn)
+
+        action_row = Adw.ActionRow(title="Actions")
+        action_row.add_suffix(btn_box)
+        group.add(action_row)
+
+        group.add(Adw.ActionRow(title="Status", child=status_label))
+
+        def save_pref_state():
+            self.save_settings_dict({
+                "nc_sync_enabled": enable_switch.get_active(),
+                "nc_url": url_row.get_text().strip(),
+                "nc_username": user_row.get_text().strip(),
+                "nc_password": pass_row.get_text().strip(),
+                "nc_folder": folder_row.get_text().strip() or "Recipes"
+            })
+
+        enable_switch.connect("notify::active", lambda w, p: save_pref_state())
+        url_row.connect("changed", lambda w: save_pref_state())
+        user_row.connect("changed", lambda w: save_pref_state())
+        pass_row.connect("changed", lambda w: save_pref_state())
+        folder_row.connect("changed", lambda w: save_pref_state())
+
+        def on_test_clicked(btn):
+            save_pref_state()
+            test_btn.set_sensitive(False)
+            status_label.set_label("Testing connection...")
+
+            def do_test():
+                client = NextcloudSync()
+                ok, msg = client.test_connection(
+                    server_url=url_row.get_text().strip(),
+                    username=user_row.get_text().strip(),
+                    password=pass_row.get_text().strip(),
+                    remote_folder=folder_row.get_text().strip() or "Recipes"
+                )
+                def finish_test():
+                    test_btn.set_sensitive(True)
+                    status_label.set_label(msg)
+                    return False
+                GLib.idle_add(finish_test)
+
+            threading.Thread(target=do_test, daemon=True).start()
+
+        def on_sync_clicked(btn):
+            save_pref_state()
+            sync_btn.set_sensitive(False)
+            status_label.set_label("Syncing with Nextcloud...")
+
+            def do_sync():
+                client = NextcloudSync()
+                local_dir = os.path.join(self.BISTRO_DIR, "recipes")
+                ok, stats, msg = client.sync(
+                    server_url=url_row.get_text().strip(),
+                    username=user_row.get_text().strip(),
+                    password=pass_row.get_text().strip(),
+                    remote_folder=folder_row.get_text().strip() or "Recipes",
+                    local_recipes_dir=local_dir
+                )
+                def finish_sync():
+                    sync_btn.set_sensitive(True)
+                    status_label.set_label(msg)
+                    if win and hasattr(win, "collection_page"):
+                        win.collection_page.refresh_all()
+                    return False
+                GLib.idle_add(finish_sync)
+
+            threading.Thread(target=do_sync, daemon=True).start()
+
+        test_btn.connect("clicked", on_test_clicked)
+        sync_btn.connect("clicked", on_sync_clicked)
+
+        pref_win.present()
 
 if __name__ == "__main__":
     app = UnifiedApp()
