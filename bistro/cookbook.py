@@ -8,23 +8,39 @@ def sanitize_filename(name):
         name = "Recipe"
     return "".join([c for c in name if c.isalnum() or c in (' ', '-', '_')]).strip() or "Recipe"
 
+def format_duration(val):
+    if not val:
+        return None
+    val_str = str(val).strip()
+    if not val_str:
+        return None
+    if val_str.startswith("PT") or val_str.startswith("P"):
+        return val_str
+    if val_str.isdigit():
+        return f"PT{val_str}M"
+    return val_str
+
 def to_nextcloud_format(data):
     """
     Converts internal recipe dict or raw data to Nextcloud Cookbook JSON schema dict.
+    Preserves existing raw schema fields while updating standard Nextcloud Cookbook properties.
     """
-    name = data.get('name') or data.get('strDrink') or data.get('strMeal') or "Untitled Recipe"
-    category = data.get('recipeCategory') or data.get('category') or data.get('strCategory') or ""
-    description = data.get('description') or ""
+    base_schema = {}
+    if isinstance(data.get('raw_schema'), dict):
+        base_schema = data['raw_schema'].copy()
+
+    name = data.get('name') or data.get('strDrink') or data.get('strMeal') or base_schema.get('name') or "Untitled Recipe"
+    category = data.get('recipeCategory') or data.get('category') or data.get('strCategory') or base_schema.get('recipeCategory') or ""
+    description = data.get('description') or base_schema.get('description') or ""
 
     # Ingredients
-    raw_ingredients = data.get('recipeIngredient') or data.get('ingredients')
+    raw_ingredients = data.get('recipeIngredient') or data.get('ingredients') or base_schema.get('recipeIngredient')
     ingredients = []
     if isinstance(raw_ingredients, list):
         ingredients = [str(i).strip() for i in raw_ingredients if str(i).strip()]
     elif isinstance(raw_ingredients, str):
         ingredients = [i.strip() for i in raw_ingredients.split('\n') if i.strip()]
     else:
-        # Fallback for API drinks / meals (strIngredient1..20)
         for i in range(1, 21):
             ing = data.get(f"strIngredient{i}")
             if ing and str(ing).strip():
@@ -32,7 +48,7 @@ def to_nextcloud_format(data):
                 ingredients.append(f"{meas} {str(ing).strip()}".strip())
 
     # Instructions
-    raw_instructions = data.get('recipeInstructions') or data.get('instructions') or data.get('strInstructions')
+    raw_instructions = data.get('recipeInstructions') or data.get('instructions') or data.get('strInstructions') or base_schema.get('recipeInstructions')
     instructions = []
     if isinstance(raw_instructions, list):
         instructions = [str(i).strip() for i in raw_instructions if str(i).strip()]
@@ -43,12 +59,18 @@ def to_nextcloud_format(data):
         instructions = []
 
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    date_created = data.get('dateCreated') or now_iso
-    date_modified = data.get('dateModified') or now_iso
+    date_created = data.get('dateCreated') or base_schema.get('dateCreated') or now_iso
+    date_modified = now_iso
 
-    image_url = data.get('imageUrl') or data.get('strDrinkThumb') or data.get('strMealThumb') or data.get('image', '')
+    image_url = data.get('imageUrl') or data.get('strDrinkThumb') or data.get('strMealThumb') or data.get('image') or base_schema.get('imageUrl') or base_schema.get('image') or ''
     if isinstance(image_url, list):
         image_url = image_url[0] if image_url else ''
+
+    prep_time = format_duration(data.get('prepTime') or base_schema.get('prepTime'))
+    cook_time = format_duration(data.get('cookTime') or base_schema.get('cookTime'))
+    total_time = format_duration(data.get('totalTime') or base_schema.get('totalTime'))
+
+    recipe_yield = data.get('recipeYield') if data.get('recipeYield') is not None else base_schema.get('recipeYield', 1)
 
     recipe_json = {
         "@context": "http://schema.org",
@@ -56,24 +78,29 @@ def to_nextcloud_format(data):
         "name": name,
         "description": description,
         "recipeCategory": category,
-        "keywords": data.get('keywords', ''),
+        "keywords": data.get('keywords') or base_schema.get('keywords') or '',
         "recipeIngredient": ingredients,
         "recipeInstructions": instructions,
         "dateCreated": date_created,
         "dateModified": date_modified,
-        "datePublished": data.get('datePublished', None),
-        "prepTime": data.get('prepTime', None),
-        "cookTime": data.get('cookTime', None),
-        "totalTime": data.get('totalTime', None),
-        "recipeYield": data.get('recipeYield', 1),
-        "url": data.get('url', ''),
+        "datePublished": data.get('datePublished') or base_schema.get('datePublished') or None,
+        "prepTime": prep_time,
+        "cookTime": cook_time,
+        "totalTime": total_time,
+        "recipeYield": recipe_yield,
+        "url": data.get('url') or base_schema.get('url') or '',
         "image": image_url,
         "imageUrl": image_url,
-        "printImage": data.get('printImage', True),
-        "nutrition": data.get('nutrition', []),
-        "tool": data.get('tool', []),
-        "id": str(data.get('id') or data.get('idDrink') or data.get('idMeal') or '')
+        "printImage": data.get('printImage', base_schema.get('printImage', True)),
+        "nutrition": data.get('nutrition', base_schema.get('nutrition', {})),
+        "tool": data.get('tool', base_schema.get('tool', [])),
+        "id": str(data.get('id') or data.get('idDrink') or data.get('idMeal') or base_schema.get('id') or '')
     }
+
+    for k, v in base_schema.items():
+        if k not in recipe_json:
+            recipe_json[k] = v
+
     return recipe_json
 
 def from_nextcloud_format(data, folder_path=None):
